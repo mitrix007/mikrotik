@@ -1,0 +1,127 @@
+# A fully self-contained script that downloads a list of subnets from Google's website and populates the address list
+# The script does not delete the address sheet or clear it before uploading.
+# Tested on Mikrotik 7.15.3
+
+:local comment "google"
+:local addresslist "mark_deblok_rkn"
+
+# Download subnet file
+/tool fetch url="https://www.gstatic.com/ipranges/goog.txt" mode=https
+
+# waiting for download
+delay 5
+
+# Set the file name
+:local fileName "goog.txt"
+
+# Check if the file exists
+:if ([/file find name=$fileName] = "") do={
+    :log error "File $fileName not found!"
+}
+
+# Get the file size
+:local fileSize [/file get $fileName size]
+
+# Check if the file size is greater than 1KB (1024 bytes)
+:if ($fileSize <= 1024) do={
+    :log warning "File $fileName size is less than or equal to 1KB. Current size: $fileSize bytes."
+}
+
+:if ($fileSize > 1024) do={
+
+    # Read the contents of goog.txt into a variable
+    :local fileContents [/file get $fileName contents]
+    
+    # Check if the file is empty
+    :if ([:len $fileContents] = 0) do={
+        :log warning "File $fileName is empty."
+        :return
+    }
+    
+    # Remove existing entries in the address list "$addresslist"
+    # /ip firewall address-list remove [find where list=$addresslist]
+    
+    # Add a newline at the end to ensure the last line is processed
+    :set fileContents ("$fileContents\n")
+    
+    # Initialize variables for processing
+    :local currentLine ""
+    :local char ""
+    :local index 0
+    :local contentLength [:len $fileContents]
+    
+    # Function to check if a string is a valid IPv4 subnet
+    :global isIPv4Subnet do={
+        :local subnet $1
+        # Attempt to parse the subnet as an IP address
+        :local isValid true
+        :do {
+            /ip firewall address-list add list="test-validate" address=$subnet
+            /ip firewall address-list remove [find where list="test-validate"]
+        } on-error={
+            :set isValid false
+        }
+        :return $isValid
+    }
+    
+    # Loop through each character in the file contents
+    :for index from=0 to=($contentLength - 1) do={
+        :set char [:pick $fileContents $index]
+    
+        # Check for newline character
+        :if (($char = "\n") || ($char = "\r")) do={
+    
+            # Manually trim leading and trailing whitespace from currentLine
+            :local lineLen [:len $currentLine]
+            :local startIndex 0
+            :local endIndex ($lineLen - 1)
+    
+            # Trim leading whitespace
+            :while (($startIndex < $lineLen) && ([:pick $currentLine $startIndex] = " ")) do={
+                :set startIndex ($startIndex + 1)
+            }
+    
+            # Trim trailing whitespace
+            :while (($endIndex >= $startIndex) && ([:pick $currentLine $endIndex] = " ")) do={
+                :set endIndex ($endIndex - 1)
+            }
+    
+            # Extract the trimmed line
+            :if ($startIndex > $endIndex) do={
+                :set currentLine ""
+            } else={
+                :set currentLine [:pick $currentLine $startIndex ($endIndex + 1)]
+            }
+    
+            # Proceed if the line is not empty
+            :if ([:len $currentLine] > 0) do={
+                :log info "Processing line: $currentLine"
+
+                # Check if the line is a valid IPv4 subnet
+                :if ([$isIPv4Subnet $currentLine]) do={
+                    :log info "Adding IPv4 subnet: $currentLine"
+
+                    # Try to add the subnet to the address list
+                    :do {
+                        /ip firewall address-list add list=$addresslist address=$currentLine comment=$comment
+                    } on-error={
+                        :log warning "Failed to add $currentLine to the address list. Skipping."
+                    }
+                } else={
+                    :log info "Skipping non-IPv4 entry: $currentLine"
+                }
+            }
+
+    
+            # Reset currentLine for the next line
+            :set currentLine ""
+        } else={
+            # Append character to currentLine
+            :set currentLine ($currentLine . $char)
+        }
+    }
+    
+    :log info "Script completed successfully."
+    
+    /file remove "goog.txt"
+}
